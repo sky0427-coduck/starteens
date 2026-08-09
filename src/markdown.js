@@ -2,14 +2,14 @@
 // blockquote, unordered/ordered lists, links, inline code, and paragraphs.
 // No external dependencies.
 
-function escapeHtml(s: string): string {
+function escapeHtml(s) {
   return s
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;');
 }
 
-function inline(s: string): string {
+function inline(s) {
   let out = escapeHtml(s);
   // inline code
   out = out.replace(/`([^`]+)`/g, '<code>$1</code>');
@@ -25,10 +25,10 @@ function inline(s: string): string {
   return out;
 }
 
-export function renderMarkdown(md: string): string {
-  if (!md.trim()) return '';
+export function renderMarkdown(md) {
+  if (!md || !md.trim()) return '';
   const lines = md.replace(/\r\n/g, '\n').split('\n');
-  const html: string[] = [];
+  const html = [];
   let i = 0;
   let inUl = false;
   let inOl = false;
@@ -61,7 +61,7 @@ export function renderMarkdown(md: string): string {
     // blockquote
     if (line.trim().startsWith('>')) {
       closeLists();
-      const quoteLines: string[] = [];
+      const quoteLines = [];
       while (i < lines.length && lines[i].trim().startsWith('>')) {
         quoteLines.push(lines[i].trim().replace(/^>\s?/, ''));
         i++;
@@ -90,7 +90,7 @@ export function renderMarkdown(md: string): string {
 
     // paragraph (collect consecutive non-empty, non-special lines)
     closeLists();
-    const paraLines: string[] = [];
+    const paraLines = [];
     while (
       i < lines.length &&
       lines[i].trim() !== '' &&

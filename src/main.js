@@ -1,75 +1,88 @@
-import './style.css';
-import { store } from './data';
-import * as V from './views';
-import type { ViewName } from './views';
+import { store } from './data.js';
+import * as V from './views.js';
 
 // ===== State =====
 let isAdmin = store.getAdmin();
-let currentView: ViewName = 'home';
+let currentView = 'home';
 
 const ADMIN_ID = 'admin';
 const ADMIN_PW = 'starteens2026';
 
 // ===== App shell =====
-function headerHtml(): string {
-  const views: { name: ViewName; label: string }[] = [
+function headerHtml() {
+  const views = [
     { name: 'home', label: '홈' },
     { name: 'attendance', label: '출석' },
     { name: 'reading', label: '성경읽기' },
     { name: 'calendar', label: '캘린더' },
     { name: 'prayer', label: '기도요청' },
   ];
+  
   const navItems = views
     .map(
       (v) =>
-        `<button class="nav__btn ${currentView === v.name ? 'is-active' : ''}" data-nav="${v.name}">${v.label}</button>`
+        `<button class="nav__btn ${currentView === v.name ? 'is-active' : ''}" data-nav="${v.name}" aria-current="${currentView === v.name ? 'page' : 'false'}">${v.label}</button>`
     )
     .join('');
 
   const authArea = isAdmin
     ? `<div class="nav__user">
-         <span class="admin-badge">★ 관리자</span>
+         <span class="admin-badge"><span aria-hidden="true">★</span> 관리자</span>
          <button class="nav__logout" id="logout-btn">로그아웃</button>
        </div>`
     : `<button class="nav__login" id="login-btn">관리자 로그인</button>`;
 
+  // Check if nav exists safely
+  const nav = document.querySelector('#nav');
+  const isMenuOpen = nav ? nav.classList.contains('is-open') : false;
+
   return `
     <header class="site-header">
       <div class="site-header__inner">
-        <div class="brand" data-nav="home">
-          <div class="brand__mark">S</div>
+        <div class="brand" data-nav="home" role="link" tabindex="0" aria-label="스타틴스 홈으로 이동">
+          <div class="brand__mark" aria-hidden="true">S</div>
           <div>
-            <div class="brand__name">스타틴스</div>
+            <div class="brand__name">별빛틴즈</div>
             <div class="brand__sub">YOUTH MINISTRY</div>
           </div>
         </div>
-        <button class="menu-toggle" id="menu-toggle">☰</button>
-        <nav class="nav" id="nav">
+        <button class="menu-toggle" id="menu-toggle" aria-label="메인 메뉴 열기" aria-expanded="${isMenuOpen}" aria-controls="nav">☰</button>
+        <nav class="nav" id="nav" aria-label="주요 서비스 내비게이션">
           ${navItems}
-          <div class="nav__divider"></div>
+          <div class="nav__divider" aria-hidden="true"></div>
           ${authArea}
         </nav>
       </div>
     </header>`;
 }
 
-function footerHtml(): string {
+function footerHtml() {
   return `
     <footer class="site-footer">
-      <div><span class="site-footer__logo">스타틴스</span> · 중등부</div>
-      <div style="margin-top:4px">"주의 말씀은 내 발의 등이요 내 길의 빛이니이다" - 시편 119:105</div>
+      <div><span class="site-footer__logo">별빛틴즈</span></div>
+      <div style="margin-top:4px" lang="ko">"주의 말씀은 내 발의 등이요 내 길의 빛이니이다" - 시편 119:105</div>
     </footer>`;
 }
 
-function render(): void {
-  const app = document.querySelector('#app')!;
-  app.innerHTML = `${headerHtml()}<main class="main" id="main"></main>${footerHtml()}`;
+function render() {
+  const app = document.querySelector('#app');
+  if (!app) {
+    console.error('App container not found!');
+    return;
+  }
+  app.innerHTML = `
+    <a href="#main" class="skip-link">본문 바로가기</a>
+    ${headerHtml()}
+    <main class="main" id="main" tabindex="-1"></main>
+    ${footerHtml()}`;
   renderView();
   bindShell();
 }
 
-function renderView(): void {
-  const main = document.querySelector('#main') as HTMLElement;
+function renderView() {
+  const main = document.querySelector('#main');
+  if (!main) return;
+
   let html = '';
   switch (currentView) {
     case 'home': html = V.renderHome(isAdmin); break;
@@ -80,31 +93,61 @@ function renderView(): void {
   }
   main.innerHTML = html;
   bindView();
-  // close mobile menu
+  
+  // Close mobile menu and update toggle attribute
   const nav = document.querySelector('#nav');
-  nav?.classList.remove('is-open');
+  if (nav) {
+    nav.classList.remove('is-open');
+    const toggleBtn = document.querySelector('#menu-toggle');
+    if (toggleBtn) {
+      toggleBtn.setAttribute('aria-expanded', 'false');
+      toggleBtn.setAttribute('aria-label', '메인 메뉴 열기');
+    }
+  }
 }
 
-function bindShell(): void {
-  // navigation
+function bindShell() {
+  // Navigation
   document.querySelectorAll('[data-nav]').forEach((el) => {
     el.addEventListener('click', (e) => {
-      const target = (e.currentTarget as HTMLElement).dataset.nav as ViewName;
+      const target = e.currentTarget.dataset.nav;
       if (target) {
         currentView = target;
         render();
+        // Focus on main title or container for screen reader focus placement
+        const main = document.querySelector('#main');
+        if (main) main.focus();
+      }
+    });
+    // Add enter/space keys support for logo
+    el.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        const target = e.currentTarget.dataset.nav;
+        if (target) {
+          currentView = target;
+          render();
+          const main = document.querySelector('#main');
+          if (main) main.focus();
+        }
       }
     });
   });
 
-  // mobile menu toggle
-  document.querySelector('#menu-toggle')?.addEventListener('click', () => {
-    document.querySelector('#nav')?.classList.toggle('is-open');
+  // Mobile menu toggle
+  document.querySelector('#menu-toggle')?.addEventListener('click', (e) => {
+    const nav = document.querySelector('#nav');
+    if (nav) {
+      const isOpen = nav.classList.toggle('is-open');
+      e.currentTarget.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+      e.currentTarget.setAttribute('aria-label', isOpen ? '메인 메뉴 닫기' : '메인 메뉴 열기');
+    }
   });
 
-  // login button
+  // Login button
   document.querySelector('#login-btn')?.addEventListener('click', openLogin);
-  // logout button
+  
+  // Logout button
   document.querySelector('#logout-btn')?.addEventListener('click', () => {
     isAdmin = false;
     store.setAdmin(false);
@@ -114,27 +157,27 @@ function bindShell(): void {
 }
 
 // ===== Login modal =====
-function openLogin(): void {
+function openLogin() {
   const m = V.openModal(
     '관리자 로그인',
     `
     <div class="login-form">
       <div class="field">
-        <label class="field__label">아이디</label>
+        <label class="field__label" for="login-id">아이디</label>
         <input class="input" id="login-id" placeholder="아이디" autocomplete="username" />
       </div>
       <div class="field">
-        <label class="field__label">비밀번호</label>
+        <label class="field__label" for="login-pw">비밀번호</label>
         <input class="input" id="login-pw" type="password" placeholder="비밀번호" autocomplete="current-password" />
       </div>
-      <div class="login-error" id="login-err"></div>
+      <div class="login-error" id="login-err" role="alert" aria-live="assertive"></div>
       <button class="btn btn--gold btn--block" id="login-submit">로그인</button>
     </div>`
   );
 
-  const idInput = m.querySelector('#login-id') as HTMLInputElement;
-  const pwInput = m.querySelector('#login-pw') as HTMLInputElement;
-  const errEl = m.querySelector('#login-err') as HTMLElement;
+  const idInput = m.querySelector('#login-id');
+  const pwInput = m.querySelector('#login-pw');
+  const errEl = m.querySelector('#login-err');
 
   const submit = () => {
     const id = idInput.value.trim();
@@ -152,7 +195,7 @@ function openLogin(): void {
     }
   };
 
-  m.querySelector('#login-submit')!.addEventListener('click', submit);
+  m.querySelector('#login-submit').addEventListener('click', submit);
   pwInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') submit();
   });
@@ -163,8 +206,9 @@ function openLogin(): void {
 }
 
 // ===== View event binding =====
-function bindView(): void {
-  const main = document.querySelector('#main') as HTMLElement;
+function bindView() {
+  const main = document.querySelector('#main');
+  if (!main) return;
 
   // ---- Home ----
   main.querySelector('[data-action="edit-word"]')?.addEventListener('click', () => {
@@ -178,7 +222,7 @@ function bindView(): void {
   main.querySelectorAll('[data-action="edit-ad"]').forEach((btn) => {
     btn.addEventListener('click', (e) => {
       if (!isAdmin) return;
-      const id = (e.currentTarget as HTMLElement).dataset.id!;
+      const id = e.currentTarget.dataset.id;
       const ad = store.getAds().find((a) => a.id === id) || null;
       V.openAdEditor(ad, () => renderView());
     });
@@ -186,7 +230,7 @@ function bindView(): void {
   main.querySelectorAll('[data-action="del-ad"]').forEach((btn) => {
     btn.addEventListener('click', (e) => {
       if (!isAdmin) return;
-      const id = (e.currentTarget as HTMLElement).dataset.id!;
+      const id = e.currentTarget.dataset.id;
       V.deleteAd(id, () => renderView());
     });
   });
@@ -195,7 +239,7 @@ function bindView(): void {
   main.querySelectorAll('[data-toggle]').forEach((btn) => {
     btn.addEventListener('click', (e) => {
       if (!isAdmin) return;
-      const id = (e.currentTarget as HTMLElement).dataset.toggle!;
+      const id = e.currentTarget.dataset.toggle;
       V.toggleAttendance(id, () => renderView());
     });
   });
@@ -208,7 +252,7 @@ function bindView(): void {
   main.querySelectorAll('[data-read-day]').forEach((cell) => {
     cell.addEventListener('click', (e) => {
       if (!isAdmin) return;
-      const ds = (e.currentTarget as HTMLElement).dataset.readDay!;
+      const ds = e.currentTarget.dataset.readDay;
       V.toggleReadingDay(ds, () => renderView());
     });
   });
@@ -227,7 +271,7 @@ function bindView(): void {
   main.querySelectorAll('[data-cal-day]').forEach((cell) => {
     cell.addEventListener('click', (e) => {
       if (!isAdmin) return;
-      const ds = (e.currentTarget as HTMLElement).dataset.calDay!;
+      const ds = e.currentTarget.dataset.calDay;
       V.openEventEditor(ds, null, () => renderView());
     });
   });
@@ -239,7 +283,7 @@ function bindView(): void {
     btn.addEventListener('click', (e) => {
       if (!isAdmin) return;
       e.stopPropagation();
-      const id = (e.currentTarget as HTMLElement).dataset.delEvent!;
+      const id = e.currentTarget.dataset.delEvent;
       V.deleteEvent(id, () => renderView());
     });
   });
@@ -250,7 +294,7 @@ function bindView(): void {
   });
   main.querySelectorAll('[data-pray]').forEach((btn) => {
     btn.addEventListener('click', (e) => {
-      const id = (e.currentTarget as HTMLElement).dataset.pray!;
+      const id = e.currentTarget.dataset.pray;
       V.togglePray(id, () => renderView());
     });
   });
@@ -258,15 +302,15 @@ function bindView(): void {
     btn.addEventListener('click', (e) => {
       if (!isAdmin) return;
       e.stopPropagation();
-      const id = (e.currentTarget as HTMLElement).dataset.delPrayer!;
+      const id = e.currentTarget.dataset.delPrayer;
       V.deletePrayer(id, () => renderView());
     });
   });
   // anonymous toggle shows/hides author field
   main.querySelectorAll('input[name="p-anon"]').forEach((radio) => {
     radio.addEventListener('change', (e) => {
-      const isAnon = (e.currentTarget as HTMLInputElement).value === 'true';
-      const authorEl = main.querySelector('#p-author') as HTMLInputElement;
+      const isAnon = e.currentTarget.value === 'true';
+      const authorEl = main.querySelector('#p-author');
       authorEl.style.display = isAnon ? 'none' : '';
       if (isAnon) authorEl.value = '';
     });
@@ -274,4 +318,4 @@ function bindView(): void {
 }
 
 // ===== Bootstrap =====
-render();
+document.addEventListener('DOMContentLoaded', render);

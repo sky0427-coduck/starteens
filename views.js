@@ -1,5 +1,6 @@
 import { store, formatDateDisplay, formatDateISO, todayISO, uid } from './data.js';
 import { renderMarkdown } from './markdown.js';
+import { createStudentAccount, listStudents, saveSiteContent, supabaseReady, uploadPublicImage } from './supabase.js';
 
 // ===== Shared UI helpers =====
 let toastTimer = null;
@@ -141,27 +142,26 @@ export function renderHome(isAdmin) {
     : `<div class="word-body"></div>`;
 
   const editBtn = isAdmin
-    ? `<button class="btn btn--gold btn--sm" data-action="edit-word">말씀 편집</button>`
+    ? `<button class="btn btn--sm" data-action="edit-word">말씀 편집</button>`
     : '';
 
   const adCards = ads.length
     ? ads.map((ad) => adCardHtml(ad, isAdmin)).join('')
-    : `<div class="empty"><div class="empty__icon" aria-hidden="true">📋</div><div class="empty__text">등록된 광고/주보가 없습니다.</div></div>`;
+    : `<div class="empty">등록된 광고가 없습니다.</div>`;
 
   const addAdBtn = isAdmin
-    ? `<button class="btn btn--navy btn--sm" data-action="add-ad">+ 광고 추가</button>`
+    ? `<button class="btn btn--sm" data-action="add-ad">+ 광고 추가</button>`
     : '';
 
   return `
     ${birthdayBannerHtml()}
     <section class="word-hero" aria-labelledby="word-title">
+      <h2 class="sr-only" id="word-title">오늘의 말씀</h2>
       <div class="word-date">${formatDateDisplay(new Date())}</div>
-      <div class="word-divider" aria-hidden="true"></div>
-      <h2 class="word-label" id="word-title">그날의 말씀</h2>
       ${wordHtml}
-      ${isAdmin ? `<div class="word-edit-zone">${editBtn}</div>` : ''}
+      ${isAdmin ? `<div style="margin-top:1rem">${editBtn}</div>` : ''}
     </section>
-    <section class="card" style="margin-top:24px" aria-labelledby="bulletin-title">
+    <section class="card" aria-labelledby="bulletin-title">
       <div class="card__head">
         <h2 class="card__title" id="bulletin-title">광고 · 주보</h2>
         ${addAdBtn}
@@ -178,7 +178,7 @@ function fontSizePx(size) {
 
 function adCardHtml(ad, isAdmin) {
   const img = ad.image
-    ? `<img class="ad-card__img" src="${ad.image}" alt="광고 이미지: ${escapeText(ad.text) || '설명 없음'}" />`
+    ? `<a href="${ad.image}" target="_blank" rel="noopener" class="ad-card__link"><img src="${ad.image}" alt="별빛틴즈 광고 및 주보 이미지" loading="lazy" /></a>`
     : `<div class="ad-card__placeholder" aria-hidden="true">✝</div>`;
   const actions = isAdmin
     ? `<div class="ad-card__actions">
@@ -218,7 +218,7 @@ export function openWordEditor(onDone) {
       </div>
       <div class="field">
         <span class="field__label" id="font-size-label">글씨 크기</span>
-        <div style="display:flex;gap:6px" role="radiogroup" aria-labelledby="font-size-label">
+        <div class="md-size-options" role="radiogroup" aria-labelledby="font-size-label">
           <button class="md-size-btn ${word?.fontSize === 'small' ? 'is-active' : ''}" data-size="small" role="radio" aria-checked="${word?.fontSize === 'small'}">작게</button>
           <button class="md-size-btn ${(word?.fontSize || 'medium') === 'medium' ? 'is-active' : ''}" data-size="medium" role="radio" aria-checked="${(word?.fontSize || 'medium') === 'medium'}">보통</button>
           <button class="md-size-btn ${word?.fontSize === 'large' ? 'is-active' : ''}" data-size="large" role="radio" aria-checked="${word?.fontSize === 'large'}">크게</button>
@@ -255,12 +255,16 @@ export function openWordEditor(onDone) {
     });
   });
 
-  m.querySelector('#word-save').addEventListener('click', () => {
+  m.querySelector('#word-save').addEventListener('click', async () => {
     const text = ta.value;
-    store.saveWord({ text, fontSize: currentSize, updatedAt: new Date().toISOString() });
-    m.remove();
-    toast('말씀이 저장되었습니다.');
-    onDone();
+    const nextWord = { text, fontSize: currentSize, updatedAt: new Date().toISOString() };
+    const saveButton = m.querySelector('#word-save');
+    saveButton.disabled = true;
+    try {
+      if (supabaseReady) await saveSiteContent('word', nextWord);
+      store.saveWord(nextWord);
+      m.remove(); toast('말씀이 저장되었습니다.'); onDone();
+    } catch (error) { toast(`말씀 저장 실패: ${error.message}`); saveButton.disabled = false; }
   });
 }
 
@@ -310,11 +314,13 @@ export function openAdEditor(existing, onDone) {
     <div class="field">
       <label class="field__label" for="ad-text">설명 텍스트</label>
       <textarea class="textarea" id="ad-text" placeholder="광고/주보 설명을 입력하세요">${existing?.text || ''}</textarea>
-    </div>`,
+    </div>
+    `,
     `<button class="btn btn--ghost" data-close>취소</button><button class="btn btn--gold" id="ad-save">저장</button>`
   );
 
   let imageData = existing?.image || null;
+  let imageFile = null;
   const dropZone = m.querySelector('#ad-drop');
   const fileInput = m.querySelector('#ad-file');
 
@@ -329,53 +335,66 @@ export function openAdEditor(existing, onDone) {
   fileInput.addEventListener('change', () => {
     const file = fileInput.files?.[0];
     if (!file) return;
-    if (file.size > 2 * 1024 * 1024) { toast('사진은 2MB 이하만 가능합니다.'); return; }
-    const reader = new FileReader();
-    reader.onload = () => {
-      imageData = reader.result;
-      dropZone.classList.add('has-file');
-      dropZone.innerHTML = `<img src="${imageData}" style="max-width:100%;max-height:200px;border-radius:8px;" alt="새로 업로드된 광고 이미지" />`;
-    };
-    reader.readAsDataURL(file);
+    if (file.size > 10 * 1024 * 1024) { toast('사진은 10MB 이하만 가능합니다.'); return; }
+    if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) { toast('JPG, PNG, WebP 사진만 올릴 수 있습니다.'); return; }
+    imageFile = file;
+    const preview = URL.createObjectURL(file);
+    dropZone.classList.add('has-file');
+    dropZone.innerHTML = `<img src="${preview}" style="max-width:100%;max-height:200px;border-radius:8px;" alt="새로 선택한 광고 이미지" />`;
   });
 
-  m.querySelector('#ad-save').addEventListener('click', () => {
+  m.querySelector('#ad-save').addEventListener('click', async () => {
     const text = m.querySelector('#ad-text').value;
-    const ads = store.getAds();
-    if (existing) {
-      const idx = ads.findIndex((a) => a.id === existing.id);
-      if (idx >= 0) {
-        ads[idx] = { ...ads[idx], image: imageData, text };
+    const saveButton = m.querySelector('#ad-save');
+    saveButton.disabled = true;
+    try {
+      if (supabaseReady && !imageFile && typeof imageData === 'string' && imageData.startsWith('data:image/')) {
+        const blob = await (await fetch(imageData)).blob();
+        const extension = blob.type.split('/')[1] || 'jpeg';
+        imageFile = new File([blob], `legacy-bulletin.${extension}`, { type: blob.type });
       }
-    } else {
-      ads.unshift({ id: uid(), image: imageData, text, createdAt: new Date().toISOString() });
+      if (supabaseReady && imageFile) imageData = await uploadPublicImage(imageFile, 'bulletins');
+      const ads = store.getAds();
+      let nextAd;
+      if (existing) {
+        const idx = ads.findIndex((a) => a.id === existing.id);
+        nextAd = { ...(idx >= 0 ? ads[idx] : existing), image: imageData, text };
+        if (idx >= 0) ads[idx] = nextAd;
+        else ads.unshift(nextAd);
+      } else {
+        nextAd = { id: uid(), image: imageData, text, createdAt: new Date().toISOString() };
+        ads.unshift(nextAd);
+      }
+      if (supabaseReady) await saveSiteContent('ads', ads);
+      store.saveAds(ads);
+      m.remove(); toast('광고가 저장되었습니다.'); onDone();
+    } catch (error) {
+      toast(`광고 저장 실패: ${error.message}`);
+      saveButton.disabled = false;
     }
-    store.saveAds(ads);
-    m.remove();
-    toast('광고가 저장되었습니다.');
-    onDone();
   });
 }
 
 export function deleteAd(id, onDone) {
-  confirmDialog('이 광고를 삭제하시겠습니까?', () => {
-    store.saveAds(store.getAds().filter((a) => a.id !== id));
-    toast('광고가 삭제되었습니다.');
-    onDone();
+  confirmDialog('이 광고를 삭제하시겠습니까?', async () => {
+    const ads = store.getAds().filter((a) => a.id !== id);
+    try {
+      if (supabaseReady) await saveSiteContent('ads', ads);
+      store.saveAds(ads); toast('광고가 삭제되었습니다.'); onDone();
+    } catch (error) { toast(`광고 삭제 실패: ${error.message}`); }
   });
 }
 
 // ===== Attendance View =====
-export function renderAttendance(isAdmin) {
-  const students = store.getStudents();
+export function renderAttendance(isAdmin, remoteStudents = null, remotePresentIds = null) {
+  const students = remoteStudents || store.getStudents();
   const today = todayISO();
   const attendance = store.getAttendance();
-  const presentIds = attendance[today] || [];
+  const presentIds = remotePresentIds || attendance[today] || [];
 
   const todayCount = presentIds.length;
   const totalCount = students.length;
 
-  // weekly stats
   const weekStart = new Date();
   const day = weekStart.getDay();
   weekStart.setDate(weekStart.getDate() - day);
@@ -398,15 +417,15 @@ export function renderAttendance(isAdmin) {
               ? `<button type="button" class="attendance-toggle ${isPresent ? 'is-on' : ''}" data-toggle="${s.id}" aria-label="${s.name} (${s.grade}) 출석 상태 토글" aria-pressed="${isPresent}">
                    <span class="attendance-toggle__dot" aria-hidden="true"></span>
                  </button>`
-              : `<span style="font-size:13px;color:${isPresent ? 'var(--c-success)' : 'var(--c-muted)'};font-weight:600">
+              : `<span style="font-size:0.85rem;font-weight:600;color:${isPresent ? 'var(--accent)' : 'var(--text-secondary)'}">
                    ${isPresent ? '출석' : '결석'}
                  </span>`}
           </div>`;
       }).join('')
-    : `<div class="empty"><div class="empty__icon" aria-hidden="true">📝</div><div class="empty__text">등록된 학생이 없습니다.${isAdmin ? ' 학생을 추가해주세요.' : ''}</div></div>`;
+    : `<div class="empty">등록된 학생이 없습니다.</div>`;
 
   const manageBtn = isAdmin
-    ? `<button class="btn btn--navy btn--sm" data-action="manage-students">학생 관리</button>`
+    ? `<button class="btn btn--sm" data-action="manage-students">학생 관리</button>`
     : '';
 
   return `
@@ -417,13 +436,18 @@ export function renderAttendance(isAdmin) {
         <h2 class="card__title" id="attendance-card-title">오늘의 출석</h2>
         ${manageBtn}
       </div>
-      <div role="region" aria-label="학생 출석 목록" tabindex="0" style="max-height: 400px; overflow-y: auto; border: 1px solid var(--c-line); border-radius: var(--radius-md); margin-bottom: 16px;">
+      <div style="margin-bottom:1.5rem">
         ${studentRows}
       </div>
-      <div class="attendance-stats" role="region" aria-label="출석 현황 요약">
-        <div class="stat-box"><div class="stat-box__num">${todayCount}</div><div class="stat-box__label">오늘 출석</div></div>
-        <div class="stat-box"><div class="stat-box__num">${weekCount}</div><div class="stat-box__label">이번주 누적</div></div>
-        <div class="stat-box"><div class="stat-box__num">${totalCount}</div><div class="stat-box__label">전체 학생</div></div>
+      <div class="attendance-stats" style="display:flex; gap:1rem">
+        <div class="stat-box" style="flex:1;text-align:center;padding:1rem;background:var(--bg-color);border-radius:var(--radius)">
+          <div class="stat-box__num" style="font-size:1.5rem;font-weight:700">${todayCount}</div>
+          <div class="stat-box__label" style="font-size:0.8rem;color:var(--text-secondary)">오늘 출석</div>
+        </div>
+        <div class="stat-box" style="flex:1;text-align:center;padding:1rem;background:var(--bg-color);border-radius:var(--radius)">
+          <div class="stat-box__num" style="font-size:1.5rem;font-weight:700">${weekCount}</div>
+          <div class="stat-box__label" style="font-size:0.8rem;color:var(--text-secondary)">이번주 누적</div>
+        </div>
       </div>
     </section>`;
 }
@@ -440,59 +464,80 @@ export function toggleAttendance(studentId, onDone) {
 }
 
 // --- Student management modal ---
-export function openStudentManager(onDone) {
-  const students = store.getStudents();
+export async function openStudentManager(onDone) {
+  let students = store.getStudents();
+  if (supabaseReady) {
+    try { students = await listStudents(); }
+    catch (error) { toast(`학생 목록을 불러오지 못했습니다: ${error.message}`); }
+  }
   const rows = students.map((s) => `
     <div class="student-row">
       <span class="student-row__name">${s.name}</span>
       <span class="student-row__grade">${s.grade}</span>
       <span style="font-size:12px;color:var(--c-muted)">${s.birthday || '생일 미입력'}</span>
-      <button class="btn btn--danger btn--sm" data-del-student="${s.id}" aria-label="${s.name} 학생 삭제">삭제</button>
+      ${supabaseReady ? '' : `<button class="btn btn--danger btn--sm" data-del-student="${s.id}" aria-label="${s.name} 학생 삭제">삭제</button>`}
     </div>`).join('');
 
   const m = openModal(
     '학생 관리',
     `
-    <div style="margin-bottom:16px;padding:16px;background:var(--c-accent-soft);border-radius:14px">
-      <div style="font-weight:700;margin-bottom:12px;color:var(--c-navy-800)" id="add-student-title">새 학생 추가</div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap">
+    <div style="margin-bottom:16px;padding:16px;background:var(--bg-color);border-radius:14px">
+      <div style="font-weight:700;margin-bottom:12px" id="add-student-title">새 학생 추가</div>
+      <div class="student-create-grid">
         <div style="flex:1;min-width:100px">
           <label class="sr-only" for="s-name">이름</label>
           <input class="input" id="s-name" placeholder="이름" />
         </div>
         <div>
           <label class="sr-only" for="s-grade">학년</label>
+          <div class="nav__btn">
           <select class="select" id="s-grade">
             <option value="중1">중1</option>
             <option value="중2">중2</option>
             <option value="중3">중3</option>
           </select>
+          </div>
+          
         </div>
         <div>
           <label class="sr-only" for="s-birthday">생일 (월-일)</label>
-          <input class="input" id="s-birthday" placeholder="MM-DD" style="width:80px" aria-describedby="bday-hint" />
+          <input class="input" id="s-birthday" placeholder="생일 (선택)" />
         </div>
-        <button class="btn btn--gold btn--sm" id="s-add">추가</button>
+        <div><label class="sr-only" for="s-username">학생 아이디</label><input class="input" id="s-username" placeholder="로그인 아이디" autocomplete="off" /></div>
+        <div><label class="sr-only" for="s-password">학생 비밀번호</label><input class="input" id="s-password" type="password" placeholder="초기 비밀번호" autocomplete="new-password" /></div>
+        <button class="btn btn--sm" id="s-add">추가</button>
       </div>
-      <div id="bday-hint" class="sr-only">생일 입력 형식은 월과 일을 두 자리 숫자로 표시하고 하이픈으로 연결합니다 (예: 08-08).</div>
     </div>
-    <div role="region" aria-label="학생 등록부 목록" tabindex="0" style="max-height: 250px; overflow-y: auto; border: 1px solid var(--c-line); border-radius: var(--radius-md);">
-      ${rows || '<div class="empty"><div class="empty__text">등록된 학생이 없습니다.</div></div>'}
+    <div role="region" aria-label="학생 등록부 목록" tabindex="0" style="max-height: 250px; overflow-y: auto; border: 1px solid var(--border-color); border-radius: var(--radius);">
+      ${rows || '<div class="empty">등록된 학생이 없습니다.</div>'}
     </div>`,
     `<button class="btn btn--ghost" data-close>닫기</button>`
   );
 
-  m.querySelector('#s-add').addEventListener('click', () => {
+  m.querySelector('#s-add').addEventListener('click', async () => {
     const name = m.querySelector('#s-name').value.trim();
     const grade = m.querySelector('#s-grade').value;
     const birthday = m.querySelector('#s-birthday').value.trim();
-    if (!name) { toast('이름을 입력하세요.'); return; }
-    const students = store.getStudents();
-    students.push({ id: uid(), name, grade, birthday: birthday || null, createdAt: new Date().toISOString() });
-    store.saveStudents(students);
-    toast('학생이 추가되었습니다.');
-    m.remove();
-    openStudentManager(onDone);
+    const username = m.querySelector('#s-username').value.trim();
+    const password = m.querySelector('#s-password').value;
+    if (!name || !username || password.length < 8) { toast('이름, 아이디와 8자 이상의 초기 비밀번호를 입력하세요.'); return; }
+    if (!supabaseReady) { toast('먼저 supabase-config.js를 설정하세요.'); return; }
+    const addButton = m.querySelector('#s-add');
+    addButton.disabled = true;
+    try {
+      const student = await createStudentAccount({ name, grade, birthday, username, password });
+      const students = store.getStudents();
+      students.push({ ...student, createdAt: new Date().toISOString() });
+      store.saveStudents(students);
+      toast('학생 계정을 추가했습니다.');
+      m.remove();
+      openStudentManager(onDone);
+    } catch (error) {
+      toast(error.message || '학생 계정을 만들지 못했습니다.');
+    } finally {
+      if (m.isConnected) addButton.disabled = false;
+    }
+    return;
   });
 
   m.querySelectorAll('[data-del-student]').forEach((btn) => {
@@ -515,7 +560,6 @@ export function renderReading(isAdmin) {
   const today = new Date();
   const todayStr = formatDateISO(today);
 
-  // Calculate streak
   let streak = 0;
   const d = new Date(today);
   while (reading[formatDateISO(d)]) {
@@ -523,7 +567,6 @@ export function renderReading(isAdmin) {
     d.setDate(d.getDate() - 1);
   }
 
-  // Build last 28 days board (4 weeks)
   const days = [];
   for (let i = 27; i >= 0; i--) {
     const date = new Date(today);
@@ -531,15 +574,12 @@ export function renderReading(isAdmin) {
     const ds = formatDateISO(date);
     const isRead = reading[ds] ? true : false;
     const isTodayDate = ds === todayStr;
-    const dateLabel = `${date.getMonth() + 1}월 ${date.getDate()}일 ${isRead ? '성경 읽기 완료' : '성경 안 읽음'}${isTodayDate ? ' (오늘)' : ''}`;
     
     days.push(`
-      <button type="button" class="read-day ${isRead ? 'is-read' : ''} ${isTodayDate ? 'is-today' : ''}"
+      <button type="button" class="read-day ${isRead ? 'is-read' : ''}"
            data-read-day="${ds}"
-           aria-label="${dateLabel}"
            aria-pressed="${isRead}">
         <div class="read-day__num">${date.getDate()}</div>
-        ${isRead ? '<div class="read-day__dot" aria-hidden="true"></div>' : ''}
       </button>`);
   }
 
@@ -549,28 +589,29 @@ export function renderReading(isAdmin) {
     : '';
 
   return `
-    <div class="view__title">성경 읽기 챌린지</div>
-    <div class="view__subtitle">${config.goal}</div>
+    <div class="view__title">성경 읽기</div>
     <section class="card" aria-labelledby="reading-card-title">
       <div class="card__head">
-        <h2 class="card__title" id="reading-card-title">나의 기록</h2>
+        <h2 class="card__title" id="reading-card-title">기록</h2>
         ${manageBtn}
       </div>
-      <div class="reading-streak" role="region" aria-label="연속 읽기 기록 요약">
-        <div class="streak-pill"><span>🔥 연속</span><span class="streak-pill__num">${streak}</span><span>일</span></div>
-        <div class="streak-pill"><span>📖 총</span><span class="streak-pill__num">${totalRead}</span><span>일</span></div>
+      <div class="reading-streak" style="display:flex;gap:1rem;margin-bottom:1.5rem">
+        <div class="streak-pill" style="padding:0.5rem 1rem;background:var(--accent-light);color:var(--accent);border-radius:8px;font-weight:600">🔥 연속 ${streak}일</div>
+        <div class="streak-pill" style="padding:0.5rem 1rem;background:var(--bg-color);color:var(--text-secondary);border-radius:8px;font-weight:600">📖 총 ${totalRead}일</div>
       </div>
-      <div style="font-size:13px;color:var(--c-muted);margin-bottom:8px;text-align:center" id="reading-hint">최근 4주 &middot; 날짜 단추를 선택하여 출석하듯 체크하세요</div>
-      <div class="reading-board" role="group" aria-labelledby="reading-hint">
+      <div class="reading-board">
         ${days.join('')}
       </div>
     </section>`;
 }
 
-export function toggleReadingDay(date, onDone) {
+export async function toggleReadingDay(date, onDone) {
   const reading = store.getReading();
   reading[date] = !reading[date];
-  store.saveReading(reading);
+  try {
+    if (supabaseReady) await saveSiteContent('reading', reading);
+    store.saveReading(reading);
+  } catch (error) { toast(`읽기 기록 저장 실패: ${error.message}`); return; }
   onDone();
 }
 
@@ -585,8 +626,13 @@ export function openReadingConfig(onDone) {
     </div>`,
     `<button class="btn btn--ghost" data-close>취소</button><button class="btn btn--gold" id="r-save">저장</button>`
   );
-  m.querySelector('#r-save').addEventListener('click', () => {
+  m.querySelector('#r-save').addEventListener('click', async (event) => {
     config.goal = m.querySelector('#r-goal').value;
+    const button = event.currentTarget;
+    button.disabled = true;
+    try {
+      if (supabaseReady) await saveSiteContent('readingConfig', config);
+    } catch (error) { toast(`설정 저장 실패: ${error.message}`); button.disabled = false; return; }
     store.saveReadingConfig(config);
     m.remove();
     toast('설정이 저장되었습니다.');
@@ -619,73 +665,42 @@ export function renderCalendar(isAdmin) {
     const dayEvents = events.filter((e) => e.date === ds);
     const isToday = ds === today;
     
-    let eventLabel = '';
-    if (dayEvents.length > 0) {
-      eventLabel = `, 일정: ${dayEvents.map(e => e.title).join(', ')}`;
-    }
-    const ariaLabel = `${calYear}년 ${calMonth + 1}월 ${d}일${isToday ? ' (오늘)' : ''}${eventLabel}`;
-
     cells.push(`
-      <button type="button" class="cal-cell ${isToday ? 'is-today' : ''}" data-cal-day="${ds}" aria-label="${ariaLabel}">
+      <button type="button" class="cal-cell ${isToday ? 'is-today' : ''}" data-cal-day="${ds}">
         <div class="cal-cell__num">${d}</div>
-        ${dayEvents.length
-          ? `<div class="cal-cell__events" aria-hidden="true"><span class="cal-event-dot"></span>${dayEvents[0].title}${dayEvents.length > 1 ? ` +${dayEvents.length - 1}` : ''}</div>`
-          : ''}
+        ${dayEvents.length ? `<div class="cal-event-dot"></div>` : ''}
       </button>`);
   }
 
-  // Upcoming events list
   const upcoming = events
     .filter((e) => e.date >= today)
     .sort((a, b) => a.date.localeCompare(b.date))
-    .slice(0, 8);
+    .slice(0, 5);
 
   const upcomingHtml = upcoming.length
     ? upcoming.map((e) => `
-        <div class="event-item">
-          <div class="event-item__date">${formatDateDisplay(new Date(e.date))}</div>
-          <div class="event-item__body">
-            <div class="event-item__title">${escapeText(e.title)}</div>
-            ${e.desc ? `<div class="event-item__desc">${escapeText(e.desc)}</div>` : ''}
-          </div>
-          ${isAdmin ? `<button class="event-item__del" data-del-event="${e.id}" aria-label="${escapeText(e.title)} 일정 삭제">삭제</button>` : ''}
+        <div class="event-item" style="padding:1rem 0;border-bottom:1px solid var(--border-color)">
+          <div style="font-size:0.8rem;color:var(--text-secondary)">${formatDateDisplay(new Date(e.date))}</div>
+          <div style="font-weight:600">${escapeText(e.title)}</div>
         </div>`).join('')
-    : `<div class="empty"><div class="empty__text">예정된 행사가 없습니다.</div></div>`;
-
-  const addBtn = isAdmin
-    ? `<button class="btn btn--navy btn--sm" data-action="add-event">+ 행사 추가</button>`
-    : '';
+    : `<div class="empty">예정된 행사가 없습니다.</div>`;
 
   return `
-    <div class="view__title">행사 · 모임 캘린더</div>
-    <div class="view__subtitle">이번 달 중등부 일정</div>
-    <section class="card" aria-label="달력 컨트롤">
-      <div class="cal-nav">
-        <button class="cal-nav__btn" data-cal-prev aria-label="이전 달">&lt;</button>
-        <h2 class="cal-nav__month" aria-live="polite" aria-atomic="true">${calYear}년 ${monthNames[calMonth]}</h2>
-        <button class="cal-nav__btn" data-cal-next aria-label="다음 달">&gt;</button>
+    <div class="view__title">캘린더</div>
+    <section class="card">
+      <div class="cal-nav" style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem">
+        <button class="cal-nav__btn" data-cal-prev>&lt;</button>
+        <h2 class="cal-nav__month" style="margin:0;font-size:1.1rem">${calYear}년 ${monthNames[calMonth]}</h2>
+        <button class="cal-nav__btn" data-cal-next>&gt;</button>
       </div>
-      <div class="cal-grid" role="grid" aria-label="${calYear}년 ${monthNames[calMonth]} 달력">
-        <div style="display:contents" role="row">
-          ${weekdays.map((w) => `<div class="cal-head" role="columnheader">${w}</div>`).join('')}
-        </div>
-        <div style="display:contents" role="row">
-          ${cells.map(c => {
-            if (c.includes('is-empty')) {
-              return `<div role="gridcell" class="cal-cell is-empty"></div>`;
-            } else {
-              return `<div role="gridcell">${c}</div>`;
-            }
-          }).join('')}
-        </div>
+      <div class="cal-grid">
+        ${weekdays.map((w) => `<div class="cal-head" style="text-align:center;font-size:0.8rem;color:var(--text-secondary)">${w}</div>`).join('')}
+        ${cells.join('')}
       </div>
     </section>
-    <section class="card" aria-labelledby="upcoming-events-title">
-      <div class="card__head">
-        <h2 class="card__title" id="upcoming-events-title">다가오는 행사</h2>
-        ${addBtn}
-      </div>
-      <div class="event-list">${upcomingHtml}</div>
+    <section class="card">
+      <h2 class="card__title">다가오는 행사</h2>
+      ${upcomingHtml}
     </section>`;
 }
 
@@ -714,7 +729,7 @@ export function openEventEditor(preDate, existing, onDone) {
     </div>`,
     `<button class="btn btn--ghost" data-close>취소</button><button class="btn btn--gold" id="e-save">저장</button>`
   );
-  m.querySelector('#e-save').addEventListener('click', () => {
+  m.querySelector('#e-save').addEventListener('click', async (event) => {
     const date = m.querySelector('#e-date').value;
     const title = m.querySelector('#e-title').value.trim();
     const desc = m.querySelector('#e-desc').value;
@@ -726,7 +741,12 @@ export function openEventEditor(preDate, existing, onDone) {
     } else {
       events.push({ id: uid(), date, title, desc });
     }
-    store.saveEvents(events);
+    const button = event.currentTarget;
+    button.disabled = true;
+    try {
+      if (supabaseReady) await saveSiteContent('events', events);
+      store.saveEvents(events);
+    } catch (error) { toast(`행사 저장 실패: ${error.message}`); button.disabled = false; return; }
     m.remove();
     toast('행사가 저장되었습니다.');
     onDone();
@@ -734,8 +754,12 @@ export function openEventEditor(preDate, existing, onDone) {
 }
 
 export function deleteEvent(id, onDone) {
-  confirmDialog('이 행사를 삭제하시겠습니까?', () => {
-    store.saveEvents(store.getEvents().filter((e) => e.id !== id));
+  confirmDialog('이 행사를 삭제하시겠습니까?', async () => {
+    const events = store.getEvents().filter((e) => e.id !== id);
+    try {
+      if (supabaseReady) await saveSiteContent('events', events);
+      store.saveEvents(events);
+    } catch (error) { toast(`행사 삭제 실패: ${error.message}`); return; }
     toast('행사가 삭제되었습니다.');
     onDone();
   });
@@ -749,80 +773,57 @@ export function renderPrayer(isAdmin) {
   const list = prayers.length
     ? prayers.map((p) => {
         const prayed = p.prayedBy.includes(sid);
-        const writerLabel = p.isAnonymous ? '익명' : escapeText(p.author);
         return `
-          <article class="prayer-item" aria-labelledby="prayer-author-${p.id}">
-            <div class="prayer-item__body">
-              <div class="prayer-item__author" id="prayer-author-${p.id}">${writerLabel}</div>
-              <div class="prayer-item__text">${escapeText(p.text)}</div>
-              <div class="prayer-item__meta">
-                <button type="button" class="pray-btn ${prayed ? 'is-prayed' : ''}" data-pray="${p.id}" aria-pressed="${prayed}" aria-label="기도할게요 누적 ${p.prayCount}명">
-                  🙏 기도할게요 <span>${p.prayCount}</span>
-                </button>
-                <span class="prayer-item__date" aria-label="작성일">${new Date(p.createdAt).toLocaleDateString('ko-KR')}</span>
-                ${isAdmin ? `<button class="prayer-item__del" data-del-prayer="${p.id}" aria-label="${writerLabel}님의 기도 요청글 삭제">삭제</button>` : ''}
-              </div>
+          <article class="prayer-item">
+            <div style="font-weight:600;margin-bottom:0.5rem">${p.isAnonymous ? '익명' : escapeText(p.author)}</div>
+            <div style="margin-bottom:1rem">${escapeText(p.text)}</div>
+            <div style="display:flex;gap:1rem;align-items:center">
+              <button type="button" class="btn btn--ghost btn--sm ${prayed ? 'is-prayed' : ''}" data-pray="${p.id}">
+                🙏 ${p.prayCount}
+              </button>
+              ${isAdmin ? `<button class="btn btn--danger btn--sm" data-del-prayer="${p.id}">삭제</button>` : ''}
             </div>
           </article>`;
       }).join('')
-    : `<div class="empty"><div class="empty__icon" aria-hidden="true">🙏</div><div class="empty__text">아직 기도 요청이 없습니다. 첫 기도 제목을 올려주세요.</div></div>`;
+    : `<div class="empty">기도 요청이 없습니다.</div>`;
 
   return `
-    <div class="view__title">기도 요청 게시판</div>
-    <div class="view__subtitle">함께 기도해요</div>
-    <section class="card" aria-labelledby="prayer-submit-card-title">
-      <div class="card__head">
-        <h2 class="card__title" id="prayer-submit-card-title">기도 요청 남기기</h2>
-      </div>
+    <div class="view__title">기도 게시판</div>
+    <section class="card">
       <div class="field">
-        <span class="field__label" id="writer-type-label">작성자</span>
-        <div style="display:flex;gap:10px;align-items:center;margin-bottom:8px" role="radiogroup" aria-labelledby="writer-type-label">
-          <label style="font-size:14px;display:flex;align-items:center;gap:4px">
-            <input type="radio" name="p-anon" value="false" checked aria-label="실명 등록" /> 실명
-          </label>
-          <label style="font-size:14px;display:flex;align-items:center;gap:4px">
-            <input type="radio" name="p-anon" value="true" aria-label="익명 등록" /> 익명
-          </label>
-          <label class="sr-only" for="p-author">작성자 이름</label>
-          <input class="input" id="p-author" placeholder="이름" style="flex:1;max-width:160px;margin-left:auto" />
-        </div>
+        <textarea class="textarea" id="p-text" placeholder="기도 제목을 입력하세요..."></textarea>
       </div>
-      <div class="field">
-        <label class="field__label" for="p-text">기도 제목</label>
-        <textarea class="textarea" id="p-text" placeholder="기도 제목을 입력하세요..." style="min-height:100px"></textarea>
-      </div>
-      <button class="btn btn--gold btn--block" id="p-submit">기도 요청 올리기</button>
+      <button class="btn btn--block" id="p-submit">기도 올리기</button>
     </section>
-    <section class="card" aria-labelledby="prayer-list-title">
-      <div class="card__head"><h2 class="card__title" id="prayer-list-title">기도 제목 목록</h2></div>
-      <div class="prayer-list">${list}</div>
+    <section class="card">
+      <h2 class="card__title">목록</h2>
+      ${list}
     </section>`;
 }
 
-export function submitPrayer(onDone) {
-  const authorEl = document.querySelector('#p-author');
+export async function submitPrayer(onDone) {
   const textEl = document.querySelector('#p-text');
-  const isAnon = document.querySelector('input[name="p-anon"]:checked').value === 'true';
-  const author = authorEl.value.trim();
   const text = textEl.value.trim();
   if (!text) { toast('기도 제목을 입력하세요.'); return; }
-  if (!isAnon && !author) { toast('이름을 입력하거나 익명을 선택하세요.'); return; }
   const prayers = store.getPrayers();
   prayers.push({
     id: uid(),
-    author: isAnon ? '' : author,
+    author: '익명',
     text,
-    isAnonymous: isAnon,
+    isAnonymous: true,
     prayCount: 0,
     prayedBy: [],
     createdAt: new Date().toISOString(),
   });
-  store.savePrayers(prayers);
+  try {
+    if (supabaseReady) await saveSiteContent('prayers', prayers);
+    store.savePrayers(prayers);
+  } catch (error) { toast(`기도 요청 저장 실패: ${error.message}`); return; }
   toast('기도 요청이 올라갔습니다.');
   onDone();
 }
 
-export function togglePray(id, onDone) {
+export async function togglePray(id, onDone) {
   const sid = store.getSessionId();
   const prayers = store.getPrayers();
   const p = prayers.find((x) => x.id === id);
@@ -834,13 +835,20 @@ export function togglePray(id, onDone) {
     p.prayedBy.push(sid);
     p.prayCount++;
   }
-  store.savePrayers(prayers);
+  try {
+    if (supabaseReady) await saveSiteContent('prayers', prayers);
+    store.savePrayers(prayers);
+  } catch (error) { toast(`기도 반응 저장 실패: ${error.message}`); return; }
   onDone();
 }
 
 export function deletePrayer(id, onDone) {
-  confirmDialog('이 기도 요청을 삭제하시겠습니까?', () => {
-    store.savePrayers(store.getPrayers().filter((p) => p.id !== id));
+  confirmDialog('이 기도 요청을 삭제하시겠습니까?', async () => {
+    const prayers = store.getPrayers().filter((p) => p.id !== id);
+    try {
+      if (supabaseReady) await saveSiteContent('prayers', prayers);
+      store.savePrayers(prayers);
+    } catch (error) { toast(`기도 요청 삭제 실패: ${error.message}`); return; }
     toast('삭제되었습니다.');
     onDone();
   });

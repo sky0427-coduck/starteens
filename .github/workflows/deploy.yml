@@ -7,12 +7,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-      - run: npm install
-      - run: npm run build
+      - name: Prepare static site
+        run: |
+          mkdir -p dist
+          cp *.html *.css *.js dist/
+          cp -r supabase dist/supabase
       - uses: actions/upload-pages-artifact@v3
         with:
           path: 'dist'

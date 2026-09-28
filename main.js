@@ -1,12 +1,13 @@
 import { store } from './data.js';
 import * as V from './views.js';
+import { listAttendance, listStudents, loadSiteContent, markAttendance, saveSiteContent, supabaseReady } from './supabase.js';
 
 // ===== State =====
 let isAdmin = store.getAdmin();
 let currentView = 'home';
 
 const ADMIN_ID = 'admin';
-const ADMIN_PW = 'starteens2026';
+const ADMIN_PW = 'starteens2026'; //귀찮아서 하드코딩 ㄱ
 
 // ===== App shell =====
 function headerHtml() {
@@ -65,18 +66,12 @@ function footerHtml() {
 }
 
 function render() {
-  const app = document.querySelector('#app');
-  if (!app) {
-    console.error('App container not found!');
+  if (!document.querySelector('#main')) {
+    console.error('Main content area not found!');
     return;
   }
-  app.innerHTML = `
-    <a href="#main" class="skip-link">본문 바로가기</a>
-    ${headerHtml()}
-    <main class="main" id="main" tabindex="-1"></main>
-    ${footerHtml()}`;
-  renderView();
   bindShell();
+  renderView();
 }
 
 function renderView() {
@@ -93,6 +88,24 @@ function renderView() {
   }
   main.innerHTML = html;
   bindView();
+  if (currentView === 'attendance' && supabaseReady) {
+    const date = new Date();
+    const today = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+    Promise.all([listStudents(), listAttendance(today)]).then(([students, presentIds]) => {
+      if (currentView !== 'attendance') return;
+      main.innerHTML = V.renderAttendance(isAdmin, students, presentIds);
+      bindView();
+    }).catch((error) => V.toast(`출석 데이터를 불러오지 못했습니다: ${error.message}`));
+  }
+  document.querySelectorAll('.nav__btn').forEach((button) => {
+    const active = button.dataset.nav === currentView;
+    button.classList.toggle('is-active', active);
+    button.setAttribute('aria-current', active ? 'page' : 'false');
+  });
+  const authArea = document.querySelector('#auth-area');
+  if (authArea) authArea.innerHTML = isAdmin
+    ? '<span class="admin-badge">✦ 관리자</span><button class="nav__logout" id="logout-btn">로그아웃</button>'
+    : '<button class="nav__login" id="login-btn">관리자 로그인</button>';
   
   // Close mobile menu and update toggle attribute
   const nav = document.querySelector('#nav');
@@ -107,9 +120,12 @@ function renderView() {
 }
 
 function bindShell() {
+  if (document.body.dataset.shellBound === 'true') return;
+  document.body.dataset.shellBound = 'true';
   // Navigation
   document.querySelectorAll('[data-nav]').forEach((el) => {
     el.addEventListener('click', (e) => {
+      e.preventDefault();
       const target = e.currentTarget.dataset.nav;
       if (target) {
         currentView = target;
@@ -144,15 +160,14 @@ function bindShell() {
     }
   });
 
-  // Login button
-  document.querySelector('#login-btn')?.addEventListener('click', openLogin);
-  
-  // Logout button
-  document.querySelector('#logout-btn')?.addEventListener('click', () => {
-    isAdmin = false;
-    store.setAdmin(false);
-    V.toast('로그아웃되었습니다.');
-    render();
+  document.querySelector('#auth-area')?.addEventListener('click', (event) => {
+    if (event.target.closest('#login-btn')) openLogin();
+    if (event.target.closest('#logout-btn')) {
+      isAdmin = false;
+      store.setAdmin(false);
+      V.toast('로그아웃되었습니다.');
+      render();
+    }
   });
 }
 
@@ -179,7 +194,7 @@ function openLogin() {
   const pwInput = m.querySelector('#login-pw');
   const errEl = m.querySelector('#login-err');
 
-  const submit = () => {
+  const submit = async () => {
     const id = idInput.value.trim();
     const pw = pwInput.value;
     if (id === ADMIN_ID && pw === ADMIN_PW) {
@@ -237,10 +252,21 @@ function bindView() {
 
   // ---- Attendance ----
   main.querySelectorAll('[data-toggle]').forEach((btn) => {
-    btn.addEventListener('click', (e) => {
+    btn.addEventListener('click', async (e) => {
       if (!isAdmin) return;
       const id = e.currentTarget.dataset.toggle;
-      V.toggleAttendance(id, () => renderView());
+      if (supabaseReady) {
+        const date = new Date();
+        const today = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+        const present = e.currentTarget.classList.contains('is-on');
+        e.currentTarget.disabled = true;
+        try {
+          await markAttendance(id, today, !present);
+          renderView();
+        } catch (error) { V.toast(`출석 저장에 실패했습니다: ${error.message}`); e.currentTarget.disabled = false; }
+      } else {
+        V.toggleAttendance(id, () => renderView());
+      }
     });
   });
   main.querySelector('[data-action="manage-students"]')?.addEventListener('click', () => {
@@ -318,4 +344,36 @@ function bindView() {
 }
 
 // ===== Bootstrap =====
-document.addEventListener('DOMContentLoaded', render);
+async function initialize() {
+  if (supabaseReady) {
+    try {
+      const content = await loadSiteContent();
+      const localContent = {
+        word: store.getWord(),
+        ads: store.getAds(),
+        reading: store.getReading(),
+        readingConfig: store.getReadingConfig(),
+        events: store.getEvents(),
+        prayers: store.getPrayers(),
+      };
+      // Bring existing browser-only content into Supabase once, without replacing remote records.
+      for (const [key, value] of Object.entries(localContent)) {
+        if (!Object.hasOwn(content, key) && value !== null && value !== undefined) {
+          await saveSiteContent(key, value);
+          content[key] = value;
+        }
+      }
+      if (Object.hasOwn(content, 'word')) store.saveWord(content.word);
+      if (Array.isArray(content.ads)) store.saveAds(content.ads);
+      if (content.reading && typeof content.reading === 'object' && !Array.isArray(content.reading)) store.saveReading(content.reading);
+      if (content.readingConfig && typeof content.readingConfig === 'object') store.saveReadingConfig(content.readingConfig);
+      if (Array.isArray(content.events)) store.saveEvents(content.events);
+      if (Array.isArray(content.prayers)) store.savePrayers(content.prayers);
+    } catch (error) {
+      V.toast(`온라인 콘텐츠를 불러오지 못했습니다: ${error.message}`);
+    }
+  }
+  render();
+}
+
+document.addEventListener('DOMContentLoaded', initialize);

@@ -3,12 +3,37 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>별빛틴즈 1</title>
-    <link rel="icon" type="image/svg+xml" href="./public/vite.svg" />
-    <link rel="stylesheet" href="./src/style.css" />
+    <meta name="theme-color" content="#f7f8f4" />
+    <meta name="description" content="별빛틴즈 중등부 공동체 홈페이지" />
+    <title>별빛틴즈 · 함께 자라는 우리</title>
+    <link rel="stylesheet" href="./style.css" />
   </head>
   <body>
-    <div id="app"></div>
-    <script type="module" src="./src/main.js"></script>
+    <a href="#main" class="skip-link">본문 바로가기</a>
+    <header class="site-header">
+      <div class="site-header__inner">
+        <a class="brand" href="#home" data-nav="home" aria-label="별빛틴즈 홈">
+          <span class="brand__mark" aria-hidden="true">✦</span>
+          <span><strong class="brand__name">별빛틴즈</strong><small class="brand__sub">GROWING TOGETHER</small></span>
+        </a>
+        <button class="menu-toggle" id="menu-toggle" aria-label="메뉴 열기" aria-expanded="false" aria-controls="nav">☰</button>
+        <nav class="nav" id="nav" aria-label="주요 메뉴">
+          <button class="nav__btn" data-nav="home">홈</button>
+          <button class="nav__btn" data-nav="attendance">출석</button>
+          <button class="nav__btn" data-nav="reading">성경읽기</button>
+          <button class="nav__btn" data-nav="calendar">캘린더</button>
+          <button class="nav__btn" data-nav="prayer">기도요청</button>
+          <span class="nav__divider" aria-hidden="true"></span>
+          <span id="auth-area"><button class="nav__login" id="login-btn">관리자 로그인</button></span>
+        </nav>
+      </div>
+    </header>
+    <main class="main" id="main" tabindex="-1"></main>
+    <footer class="site-footer">
+      <span class="site-footer__logo">별빛틴즈</span>
+      <p>“주의 말씀은 내 발의 등이요 내 길의 빛이니이다” <span>· 시편 119:105</span></p>
+    </footer>
+    <script type="module" src="./main.js"></script>
   </body>
 </html>
+
